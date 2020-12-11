@@ -19,6 +19,8 @@ References:
 
 from typing import List
 
+import math
+
 from collections import deque
 import random
 
@@ -30,14 +32,26 @@ import torch.nn
 from tqdm import trange
 
 import gym
+from gym.wrappers.monitoring.video_recorder import VideoRecorder
+
 import matplotlib.pyplot as plt
+
+if torch.cuda.is_available():
+    print("NVIDIA")
+    dev = "cuda:0"
+else:
+    dev = "cpu"
+device = torch.device(dev)
 
 # -----------
 # Parameters
 # -----------
 
+## Pytorch
+torch.manual_seed(0)
+
 ## Gym
-N_STATES = 5
+N_STATES = 2
 N_ACTIONS = 2  # Left, Right
 
 ## Neural Network
@@ -45,10 +59,10 @@ BATCH_SIZE = 64
 LEARNING_RATE = 1e-4
 
 ## Reinforcement Learning
-MEMORY_SIZE = int(1e4)
+MEMORY_SIZE = int(2e4)
 STARTUP_SIZE = 100
 TOTAL_RUNTIME = int(MEMORY_SIZE*2)
-EPSILON_DECAY = 0.999
+EPSILON_DECAY = 0.9999
 GAMMA = 0.9999
 
 ## Other
@@ -77,7 +91,7 @@ def moving_average(a: np.ndarray, n: int) -> np.ndarray:
 # --------
 # States
 # --------
-def angle_to_vector(pole_angle: float, n: int) -> torch.Tensor:
+def angle_to_vector(pole_angle_rad: float, n: int) -> torch.Tensor:
     """
     Turns the pole angle into a digitized hot one encoded vector.
 
@@ -85,11 +99,16 @@ def angle_to_vector(pole_angle: float, n: int) -> torch.Tensor:
     :param n:
     :return:
     """
-    bins = np.linspace(-np.pi/2, np.pi/2, n-1)
-    idx = np.digitize(pole_angle, bins)
+    bins = np.linspace(-np.pi/2, np.pi/2, n+1)[1:-1]
+    idx = np.digitize(pole_angle_rad, bins)
     out = np.zeros(n, dtype="float32")
     out[idx] = 1
-    return torch.from_numpy(out)
+    return out
+
+def test_angle_to_vector():
+    assert (angle_to_vector(0, 2) == [0, 1]).all()
+    assert (angle_to_vector(math.radians(-15), 2) == [1, 0]).all()
+    assert (angle_to_vector(math.radians(15), 2) == [0, 1]).all()
 
 # -------------------
 # The Neural Networks
@@ -104,10 +123,10 @@ class QNetwork(torch.nn.Module):
         super(QNetwork, self).__init__()
         H = [10, 100, 10]
         self.hidden = []
-        self.inputlayer = torch.nn.Linear(N_STATES, H[0])
+        self.inputlayer = torch.nn.Linear(N_STATES, H[0]).to(device)
         for h0, h1 in zip(H, H[1:]):
-            self.hidden.append(torch.nn.Linear(h0, h1))
-        self.output = torch.nn.Linear(H[-1], N_ACTIONS)
+            self.hidden.append(torch.nn.Linear(h0, h1).to(device))
+        self.output = torch.nn.Linear(H[-1], N_ACTIONS).to(device)
         self.criterion = torch.nn.MSELoss(reduction='sum')
         self.optimizer = torch.optim.SGD(self.parameters(), lr=LEARNING_RATE)
 
@@ -146,14 +165,18 @@ class Memory(deque):
         if len(self) < BATCH_SIZE:
             return
         batch = random.sample(self, BATCH_SIZE)
+        all_state_vec = []
+        all_qvalues = []
         for state, action, reward, state_next, done in batch:
             q_update = reward
             if not done:
-                q_update = (reward + GAMMA * np.argmax(model(angle_to_vector(state_next, N_STATES)).detach().numpy()))
-            state_vec = angle_to_vector(state, N_STATES)
-            q_values = model(state_vec).detach().numpy()
+                q_update = (reward + GAMMA * np.argmax(model(torch.from_numpy(angle_to_vector(state_next, N_STATES)).to(device)).cpu().detach().numpy()))
+            state_vec = torch.from_numpy(angle_to_vector(state, N_STATES)).to(device)
+            all_state_vec.append(state_vec)
+            q_values = model(state_vec)
             q_values[action] = q_update
-            model.fit_once(state_vec, torch.from_numpy(q_values))
+            all_qvalues.append(q_values)
+        model.fit_once(torch.stack(all_state_vec), torch.stack(all_qvalues))
 
 
 
@@ -168,20 +191,24 @@ if __name__ == "__main__":
     model = QNetwork()
     epsilon = 1
     all_epsilons, all_steps, all_rewards = [], [], []
+    env = gym.make("CartPole-v0")
+    video_recorder = VideoRecorder(env, './output/00_Cartpole_Q_Learning_Video.mp4', enabled=True)
     for i in trange(TOTAL_RUNTIME):
-        env = gym.make("CartPole-v0")
         total_reward = 0.0
         total_steps = 0
-        state = env.reset()
+        state = env.reset()[2]
         while True:
+            if (i+1) % 100 == 0:
+                video_recorder.capture_frame()
             if i < STARTUP_SIZE:
                 action = env.action_space.sample()
             else:
                 if random.random() < epsilon:
                     action = env.action_space.sample()
                 else:
-                    action = np.argmax(model(angle_to_vector(state, N_STATES)).detach().numpy())
+                    action = np.argmax(model(torch.from_numpy(angle_to_vector(state, N_STATES)).to(device)).cpu().detach().numpy())
             next_state, reward, done, _ = env.step(action)
+            next_state = next_state[2]
             total_reward += reward
             total_steps += 1
             all_rewards.append(total_reward)
@@ -195,15 +222,19 @@ if __name__ == "__main__":
             memory.experience_replay(model)
         epsilon *= EPSILON_DECAY
 
+    video_recorder.close()
+    env.close()
+
     # Plotting
     fig, (ax1, ax2) = plt.subplots(2)
     ax1.plot(all_steps, all_rewards, color='red')
     ax1.plot(all_steps[MOVING_AVERAGE-1:], moving_average(all_rewards, n=MOVING_AVERAGE), color='blue')
     ax1.set_title('Cartpole Q Learning - Rewards over Training')
-    ax1.set_xlabel('total_reward')
-    ax1.set_ylabel('total_steps')
+    ax1.set_xlabel('total_steps')
+    ax1.set_ylabel('total_reward')
     ax2.plot(all_steps, all_epsilons, color='red')
     ax2.set_title('Epsilon vs Steps')
-    ax2.set_xlabel('epsilon')
-    ax2.set_ylabel('total_steps')
+    ax2.set_xlabel('total_steps')
+    ax2.set_ylabel('epsilon')
+    fig.tight_layout()
     fig.savefig('./output/Cartpole_Q_Learning.png')

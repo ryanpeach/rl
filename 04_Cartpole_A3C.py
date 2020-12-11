@@ -20,7 +20,7 @@ References:
 from itertools import count
 
 import gym
-
+from gym.wrappers.monitoring.video_recorder import VideoRecorder
 
 import torch
 import torch.nn as nn
@@ -43,7 +43,7 @@ BETAS = (0.92, 0.999)
 HIDDEN = [128, 256]
 
 ## Gym
-global_env = gym.make("CartPole-v0").unwrapped
+global_env = gym.make("CartPole-v0")
 CATEGORICAL_ACTION = True
 ACTION_DIM = global_env.action_space.n
 STATE_DIM = global_env.observation_space.shape[0]
@@ -175,7 +175,12 @@ def create_worker(gnet_actor: Actor,
     lnet_actor, lnet_critic = Actor(), Critic()
     lnet_critic.load_state_dict(gnet_critic.state_dict())
     lnet_actor.load_state_dict(gnet_actor.state_dict())
-    lenv = gym.make('CartPole-v0').unwrapped
+    lenv = gym.make('CartPole-v0')
+    if int(name[1:]) == 0:
+        video_recorder = VideoRecorder(lenv, './output/04_Cartpole_A3C.mp4', enabled=True)
+    else:
+        video_recorder = None
+
     print(f"Worker {name} starting run...")
     
     total_step = 1
@@ -183,6 +188,11 @@ def create_worker(gnet_actor: Actor,
         buffer_state, buffer_log_probs, buffer_rewards = [], [], []
         episode_reward = 0
         state = lenv.reset()
+
+        # Render the environment if you are the zeroth worker every 100 steps
+        if (total_step+1) % 100 == 0 and int(name[1:]) == 0:
+            if video_recorder:
+                video_recorder.capture_frame()
 
         for _ in count():
             state = torch.FloatTensor(state).to(device)
@@ -256,6 +266,8 @@ def create_worker(gnet_actor: Actor,
     global_results_queue.put(None)
     print("DONE!")
 
+    if video_recorder is not None:
+        video_recorder.close()
     lenv.close()
 
 
