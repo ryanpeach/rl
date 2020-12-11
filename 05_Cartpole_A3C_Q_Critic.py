@@ -180,7 +180,7 @@ def create_worker(gnet_actor: Actor,
                   opt: SharedAdam,
                   global_episode: mp.Value,
                   global_results_queue: mp.Queue,
-                  name: str) -> None:
+                  name: int) -> None:
     """
     This is our main function.
 
@@ -191,14 +191,15 @@ def create_worker(gnet_actor: Actor,
     :param opt: Our shared Adam optimizer.
     :param global_episode: A shared value that tells us what episode we are on over all workers.
     :param global_results_queue: A shared queue that workers can put rewards onto.
-    :param name: A name for this worker.
+    :param int: A number for this worker.
     :return: None
     """
     lnet_actor, lnet_critic = Actor(), Critic()
     lnet_critic.load_state_dict(gnet_critic.state_dict())
     lnet_actor.load_state_dict(gnet_actor.state_dict())
     lenv = gym.make('CartPole-v0')
-    if int(name[1:]) == 0:
+    if name == 0:
+        print("Creating Video Recorder")
         video_recorder = VideoRecorder(lenv, './output/05_Cartpole_A3C_Q_Critic.mp4', enabled=True)
     else:
         video_recorder = None
@@ -211,12 +212,11 @@ def create_worker(gnet_actor: Actor,
         episode_reward = 0
         state = lenv.reset()
 
-        # Render the environment if you are the zeroth worker every 100 steps
-        if (total_step+1) % 100 == 0 and int(name[1:]) == 0:
-            if video_recorder:
+        for _ in count():
+            # Render the environment if you are the zeroth worker every 100 steps
+            if (total_step + 1) % 10 == 0 and video_recorder is not None:
                 video_recorder.capture_frame()
 
-        for _ in count():
             state = torch.FloatTensor(state).to(device)
             policy_dist = lnet_actor(state)
             policy = Categorical(policy_dist)
@@ -237,7 +237,8 @@ def create_worker(gnet_actor: Actor,
 
             if total_step % UPDATE_GLOBAL_ITER == 0 or done:
                 # sync
-                next_policy_dist = lnet_actor(torch.FloatTensor(next_state).to(device))
+                next_state = torch.FloatTensor(next_state).to(device)
+                next_policy_dist = lnet_actor(next_state)
                 next_policy = Categorical(next_policy_dist)
                 next_action = next_policy.sample()
                 next_action_one_hot = to_onehot(next_action, ACTION_DIM)
@@ -293,6 +294,7 @@ def create_worker(gnet_actor: Actor,
 
                     # End this batch
                     break
+        total_step += 1
         
     # This indicates its time to join all workers
     global_results_queue.put(None)
@@ -312,6 +314,8 @@ def create_worker(gnet_actor: Actor,
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
+    smp = mp.get_context('spawn')
+
     # global networks
     gnet_actor = Actor()
     gnet_critic = Critic()
@@ -324,16 +328,15 @@ if __name__ == "__main__":
     opt = SharedAdam(list(gnet_actor.parameters()) + list(gnet_critic.parameters()))
 
     # Some global variables and queues
-    global_episode, global_results_queue = mp.Value('i', 0), mp.Queue()
+    global_episode, global_results_queue = smp.Value('i', 0), smp.Queue()
     
     # parallel training
     workers = []
     for i in range(mp.cpu_count()):
-        name = "w"+str(i).zfill(2)
-        worker = mp.Process(target=create_worker,
-                            args=(gnet_actor, gnet_critic, opt,
-                                  global_episode, global_results_queue,
-                                  name))
+        worker = smp.Process(target=create_worker,
+                             args=(gnet_actor, gnet_critic, opt,
+                                   global_episode, global_results_queue,
+                                   i))
         worker.start()
         workers.append(worker)
     
