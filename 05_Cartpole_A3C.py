@@ -178,7 +178,7 @@ def create_worker(gnet_actor: Actor,
     lenv = gym.make('CartPole-v0')
     if name == 0:
         print("Creating video recorder.")
-        video_recorder = VideoRecorder(lenv, './output/04_Cartpole_A3C.mp4', enabled=True)
+        video_recorder = VideoRecorder(lenv, './output/05_Cartpole_A3C.mp4', enabled=True)
     else:
         video_recorder = None
 

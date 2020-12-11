@@ -172,7 +172,7 @@ if __name__ == "__main__":
     epsilon = 1
     all_epsilons, all_steps, all_rewards = [], [], []
     env = gym.make("CartPole-v0")
-    video_recorder = VideoRecorder(env, './output/00_Cartpole_Q_Learning_Video.mp4', enabled=True)
+    video_recorder = VideoRecorder(env, './output/00_Cartpole_Q_Learning_Discrete_Video.mp4', enabled=True)
     for i in trange(TOTAL_RUNTIME):
         total_reward = 0.0
         total_steps = 0
